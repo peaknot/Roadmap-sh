@@ -1,4 +1,5 @@
-use crate::schema::CreateUser;
+use tokio::net::TcpListener;
+use crate::{errors::{ApiError, AppError}, schema::CreateUser};
 use anyhow::Result;
 use argon2::{
     Argon2, PasswordHasher,
@@ -6,12 +7,13 @@ use argon2::{
 };
 use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
 use chrono::Utc;
-use serde_json::{Value, json};
+use serde_json::{json};
 use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
 
+mod errors;
 mod schema;
 #[tokio::main]
-async fn main() -> Result<(), anyhow::Error> {
+async fn main() -> Result<(), AppError> {
     dotenvy::dotenv().ok();
 
     let db_url: String = std::env::var("DATABASE_URL")?;
@@ -26,13 +28,20 @@ async fn main() -> Result<(), anyhow::Error> {
         .route("/users", post(create_user))
         .with_state(pool);
 
+    let listener: TcpListener = TcpListener::bind("0.0.0.0:3000")
+        .await?;
+
+    println!("Listening to port 3000");
+    axum::serve(listener, app)
+        .await?;
+
     Ok(())
 }
 
 async fn create_user(
     State(pool): State<SqlitePool>,
     Json(payload): Json<CreateUser>,
-) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+) -> Result<impl IntoResponse, ApiError> {
     let salt: SaltString = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
 
@@ -40,10 +49,7 @@ async fn create_user(
         .hash_password(payload.password.as_bytes(), &salt)
         .map_err(|err| {
             eprintln!("Password hashing fialed: {err}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({"error": "Password hashing failed"})),
-            )
+            ApiError::Internal
         })?
         .to_string();
 
@@ -51,10 +57,7 @@ async fn create_user(
 
     if user_name.is_empty() {
         eprintln!("Username is required");
-        return Err((
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": " Username is required"})),
-        ));
+        return Err(ApiError::BadRequest("Username is required".into()));
     }
     //TODO validate email address first
 
@@ -84,20 +87,10 @@ async fn create_user(
         Err(e) => {
             let msg = e.to_string();
             if msg.contains("UNIQUE") {
-                return Err((
-                    StatusCode::CONFLICT,
-                    Json(json!({
-                        "msg": "Username already exists"
-                    })),
-                ));
+                return Err(ApiError::Conflict("Username already exists"));
             } else {
                 eprintln!("DB insert failed: {e}");
-                Err((
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({
-                    "error": "Internal server error"
-                    })),
-                ))
+                Err(ApiError::Internal)
             }
         }
     }
