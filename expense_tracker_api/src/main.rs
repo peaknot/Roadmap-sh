@@ -1,14 +1,18 @@
-use tokio::net::TcpListener;
-use crate::{errors::{ApiError, AppError}, schema::CreateUser};
+use crate::{
+    errors::{ApiError, AppError},
+    schema::{Claims, CreateUser, LoginPayload, User},
+};
 use anyhow::Result;
 use argon2::{
-    Argon2, PasswordHasher,
+    Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
     password_hash::{SaltString, rand_core::OsRng},
 };
 use axum::{Json, Router, extract::State, http::StatusCode, response::IntoResponse, routing::post};
-use chrono::Utc;
-use serde_json::{json};
+use chrono::{Duration, Utc};
+use jsonwebtoken::{EncodingKey, Header, encode};
+use serde_json::json;
 use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
+use tokio::net::TcpListener;
 
 mod errors;
 mod schema;
@@ -26,14 +30,13 @@ async fn main() -> Result<(), AppError> {
 
     let app: Router = Router::new()
         .route("/users", post(create_user))
+        .route("/login", post(login))
         .with_state(pool);
 
-    let listener: TcpListener = TcpListener::bind("0.0.0.0:3000")
-        .await?;
+    let listener: TcpListener = TcpListener::bind("0.0.0.0:3000").await?;
 
     println!("Listening to port 3000");
-    axum::serve(listener, app)
-        .await?;
+    axum::serve(listener, app).await?;
 
     Ok(())
 }
@@ -94,4 +97,54 @@ async fn create_user(
             }
         }
     }
+}
+
+async fn login(
+    State(pool): State<SqlitePool>,
+    Json(payload): Json<LoginPayload>,
+) -> Result<impl IntoResponse, ApiError> {
+    let user = sqlx::query_as::<_, User>(
+        r#"
+        SELECT * FROM users WHERE username = ?
+    "#,
+    )
+    .bind(&payload.username)
+    .fetch_optional(&pool)
+    .await?
+    .ok_or(ApiError::NotFound("Username does not exist"))?;
+
+    let parsed = match PasswordHash::new(&user.password_hash) {
+        Ok(hash) => hash,
+        Err(_) => {
+            return Err(ApiError::Internal);
+        }
+    };
+    if Argon2::default()
+        .verify_password(payload.password.as_bytes(), &parsed)
+        .is_err()
+    {
+        return Err(ApiError::Unauthorized);
+    }
+    let issued_at = Utc::now();
+    let expiration = issued_at + Duration::hours(1);
+
+    let claims: Claims = Claims {
+        subject: user.id,
+        expiry: expiration.timestamp() as usize,
+        issued_at: issued_at.timestamp() as usize,
+    };
+
+    let key = std::env::var("SECRET_KEY")?;
+    let token = encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(key.as_bytes()),
+    )?;
+
+
+    Ok((StatusCode::OK, Json(json!({ 
+        "msg": "Login successful",
+        "token": token,
+        "type": "Bearer"
+    }))))
 }

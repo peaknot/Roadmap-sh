@@ -1,4 +1,4 @@
-use argon2::{password_hash};
+use argon2::password_hash;
 use axum::{
     Json,
     http::StatusCode,
@@ -6,17 +6,20 @@ use axum::{
 };
 use serde::Serialize;
 use thiserror::{self, Error};
+use jsonwebtoken;
 
 #[derive(Debug, Error)]
 pub enum ApiError {
     #[error("{0}")]
     BadRequest(&'static str),
-    #[error("resource not found")]
-    _NotFound,
+    #[error("{0}")]
+    NotFound(&'static str),
     #[error("{0}")]
     Conflict(&'static str),
     #[error("internal server error")]
     Internal,
+    #[error("Invalid credentials")]
+    Unauthorized,
 }
 #[derive(Debug, Serialize)]
 struct ErrorBody {
@@ -27,9 +30,10 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let status = match self {
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
-            ApiError::_NotFound => StatusCode::NOT_FOUND,
+            ApiError::NotFound(_) => StatusCode::NOT_FOUND,
             ApiError::Conflict(_) => StatusCode::CONFLICT,
             ApiError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+            ApiError::Unauthorized => StatusCode::UNAUTHORIZED,
         };
         (
             status,
@@ -57,6 +61,16 @@ impl From<sqlx::Error> for ApiError {
         ApiError::Internal
     }
 }
+impl From<std::env::VarError> for ApiError {
+    fn from(_: std::env::VarError) -> Self {
+        ApiError::Internal
+    }
+}
+impl From<jsonwebtoken::errors::Error> for ApiError {
+    fn from(_: jsonwebtoken::errors::Error) -> Self {
+        ApiError::Internal
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum AppError {
@@ -68,5 +82,4 @@ pub enum AppError {
     Io(#[from] std::io::Error),
     #[error("migration error: {0}")]
     Migrate(#[from] sqlx::migrate::MigrateError),
-
 }
