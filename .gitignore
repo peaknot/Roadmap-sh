@@ -1,4 +1,6 @@
 target/
+node_modules/
+dist/
 # Ignore DB files anywhere in repo
 *.db
 *.db-shm
