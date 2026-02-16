@@ -1,7 +1,7 @@
 use argon2::password_hash;
 use axum::{
     Json,
-    http::StatusCode,
+    http::{self, StatusCode},
     response::{IntoResponse, Response},
 };
 use serde::Serialize;
@@ -68,6 +68,16 @@ impl From<std::env::VarError> for ApiError {
 }
 impl From<jsonwebtoken::errors::Error> for ApiError {
     fn from(_: jsonwebtoken::errors::Error) -> Self {
+        ApiError::Internal
+    }
+}
+impl From<http::header::ToStrError> for ApiError {
+    fn from(_: http::header::ToStrError) -> Self {
+        ApiError::Internal
+    }
+}
+impl From<std::num::ParseIntError> for ApiError {
+    fn from(_: std::num::ParseIntError) -> Self {
         ApiError::Internal
     }
 }

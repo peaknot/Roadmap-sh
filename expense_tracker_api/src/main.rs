@@ -1,19 +1,22 @@
+use std::str::FromStr;
+
 use crate::{
-    errors::{ApiError, AppError},
-    schema::{Claims, CreateUser, LoginPayload, User},
+    auth::auth, errors::{ApiError, AppError}, handlers::new_expense, schema::{Claims, CreateUser, LoginPayload, User, AppState}
 };
 use anyhow::Result;
 use argon2::{
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
     password_hash::{SaltString, rand_core::OsRng},
 };
-use axum::{Json, Router, extract::State, http::StatusCode, response::{IntoResponse,},routing::{post}};
+use axum::{Json, Router, extract::State, http::StatusCode, middleware, response::IntoResponse, routing::post};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{EncodingKey, Header, encode};
 use serde_json::json;
-use sqlx::{SqlitePool, sqlite::SqlitePoolOptions};
+use sqlx::{SqlitePool, sqlite::{SqliteConnectOptions, SqlitePoolOptions}};
 use tokio::net::TcpListener;
 
+mod auth;
+mod handlers;
 mod errors;
 mod schema;
 #[tokio::main]
@@ -21,17 +24,21 @@ async fn main() -> Result<(), AppError> {
     dotenvy::dotenv().ok();
 
     let db_url: String = std::env::var("DATABASE_URL")?;
+
+    let connect_opts = SqliteConnectOptions::from_str(&db_url)?
+        .foreign_keys(true);
+    
     let pool: SqlitePool = SqlitePoolOptions::new()
         .max_connections(5)
-        .connect(&db_url)
+        .connect_with(connect_opts)
         .await?;
 
-    sqlx::migrate!("./migrations").run(&pool).await?;
+    let jwt_secret = std::env::var("SECRET_KEY")?;
+    let state = AppState {pool, jwt_secret};
 
-    let app: Router = Router::new()
-        .route("/users", post(create_user))
-        .route("/login", post(login))
-        .with_state(pool);
+    sqlx::migrate!("./migrations").run(&state.pool).await?;
+
+    let app = build_app(state);
 
     let listener: TcpListener = TcpListener::bind("0.0.0.0:3000").await?;
 
@@ -42,7 +49,7 @@ async fn main() -> Result<(), AppError> {
 }
 
 async fn create_user(
-    State(pool): State<SqlitePool>,
+    State(state): State<AppState>,
     Json(payload): Json<CreateUser>,
 ) -> Result<impl IntoResponse, ApiError> {
     let salt: SaltString = SaltString::generate(&mut OsRng);
@@ -76,7 +83,7 @@ async fn create_user(
     .bind(&payload.email)
     .bind(&password_hash)
     .bind(time_created)
-    .execute(&pool)
+    .execute(&state.pool)
     .await;
 
     match result {
@@ -100,18 +107,19 @@ async fn create_user(
 }
 
 async fn login(
-    State(pool): State<SqlitePool>,
+    State(state): State<AppState>,
     Json(payload): Json<LoginPayload>,
 ) -> Result<impl IntoResponse, ApiError> {
+
     let user = sqlx::query_as::<_, User>(
         r#"
-        SELECT * FROM users WHERE username = ?
+        SELECT * FROM users WHERE username = ?1
     "#,
     )
     .bind(&payload.username)
-    .fetch_optional(&pool)
+    .fetch_optional(&state.pool)
     .await?
-    .ok_or(ApiError::NotFound("Username does not exist"))?;
+    .ok_or(ApiError::Unauthorized)?;
 
     let parsed = match PasswordHash::new(&user.password_hash) {
         Ok(hash) => hash,
@@ -129,12 +137,12 @@ async fn login(
     let expiration = issued_at + Duration::hours(1);
 
     let claims: Claims = Claims {
-        subject: user.id,
-        expiry: expiration.timestamp() as usize,
-        issued_at: issued_at.timestamp() as usize,
+        subject: user.id.to_string(),
+        expiry: expiration.timestamp(),
+        issued_at: issued_at.timestamp(),
     };
 
-    let key = std::env::var("SECRET_KEY")?;
+    let key = &state.jwt_secret;
     let token = encode(
         &Header::default(),
         &claims,
@@ -147,4 +155,19 @@ async fn login(
         "token": token,
         "type": "Bearer"
     }))))
+}
+
+fn build_app(state: AppState) -> Router {
+    let public = Router::new()
+        .route("/users", post(create_user))
+        .route("/login", post(login));
+
+    let private = Router::new()
+        .route("/home/add-expense", post(new_expense))
+        .route_layer(middleware::from_fn(auth));
+
+    Router::new()
+        .merge(private)
+        .merge(public)
+        .with_state(state)
 }

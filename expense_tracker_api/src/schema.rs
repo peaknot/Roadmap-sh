@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
-use sqlx::prelude::FromRow;
+use sqlx::{SqlitePool, prelude::FromRow};
 
+#[derive(Clone)]
+pub struct AppState{
+    pub pool: SqlitePool,
+    pub jwt_secret: String,
+}
 #[derive(Serialize, FromRow)]
 pub struct User {
     pub id: i64,
@@ -10,7 +15,7 @@ pub struct User {
     pub created_at: i64,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 pub struct CreateUser {
     pub username: String,
     pub email: String,
@@ -22,9 +27,9 @@ pub struct LoginPayload {
     pub username: String,
     pub password: String,
 }
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub struct Claims {
-    pub subject: i64,
-    pub expiry: usize,
-    pub issued_at: usize,
+    pub subject: String,
+    pub expiry: i64,
+    pub issued_at: i64,
 }
