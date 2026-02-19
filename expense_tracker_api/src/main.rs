@@ -1,14 +1,14 @@
 use std::str::FromStr;
 
 use crate::{
-    auth::auth, errors::{ApiError, AppError}, handlers::new_expense, schema::{Claims, CreateUser, LoginPayload, User, AppState}
+    auth::auth, errors::{ApiError, AppError}, handlers::{list_expense, new_expense, update_expense, delete_expense}, schema::{AppState, Claims, CreateUser, LoginPayload, User}
 };
 use anyhow::Result;
 use argon2::{
     Argon2, PasswordHash, PasswordHasher, PasswordVerifier,
     password_hash::{SaltString, rand_core::OsRng},
 };
-use axum::{Json, Router, extract::State, http::StatusCode, middleware, response::IntoResponse, routing::post};
+use axum::{Json, Router, extract::State, http::StatusCode, middleware, response::IntoResponse, routing::{delete, get, patch, post}};
 use chrono::{Duration, Utc};
 use jsonwebtoken::{EncodingKey, Header, encode};
 use serde_json::json;
@@ -137,9 +137,9 @@ async fn login(
     let expiration = issued_at + Duration::hours(1);
 
     let claims: Claims = Claims {
-        subject: user.id.to_string(),
-        expiry: expiration.timestamp(),
-        issued_at: issued_at.timestamp(),
+        sub: user.id.to_string(),
+        exp: expiration.timestamp(),
+        iat: issued_at.timestamp(),
     };
 
     let key = &state.jwt_secret;
@@ -163,7 +163,10 @@ fn build_app(state: AppState) -> Router {
         .route("/login", post(login));
 
     let private = Router::new()
-        .route("/home/add-expense", post(new_expense))
+        .route("/home/expense/delete/{id}", delete(delete_expense))
+        .route("/home/expense/update/{id}", patch(update_expense))
+        .route("/home/expense/add", post(new_expense))
+        .route("/home/expense/list", get(list_expense))
         .route_layer(middleware::from_fn(auth));
 
     Router::new()

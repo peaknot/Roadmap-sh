@@ -29,7 +29,7 @@ pub struct LoginPayload {
 }
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Claims {
-    pub subject: String,
-    pub expiry: i64,
-    pub issued_at: i64,
+    pub sub: String,
+    pub exp: i64,
+    pub iat: i64,
 }
